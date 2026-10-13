@@ -39,5 +39,32 @@ target_link_libraries(simulator
     dynamic_circuit
 )
 
+# Simulated time: random delays (EPR generation, classical jitter) and their expectations.
+add_library(timing INTERFACE)
+target_sources(timing
+  INTERFACE
+    FILE_SET HEADERS
+    BASE_DIRS "${PROJECT_SOURCE_DIR}/src"
+    FILES
+      "${CMAKE_CURRENT_SOURCE_DIR}/timing/random_delay.hpp"
+)
+
+# Noise channels applied instruction by instruction (idle relaxation, gate and readout errors).
+add_library(noise INTERFACE)
+target_sources(noise
+  INTERFACE
+    FILE_SET HEADERS
+    BASE_DIRS "${PROJECT_SOURCE_DIR}/src"
+    FILES
+      "${CMAKE_CURRENT_SOURCE_DIR}/noise/channels.hpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/noise/channel_applier.hpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/noise/device_noise.hpp"
+)
+target_link_libraries(noise
+  INTERFACE
+    simulator
+    json
+)
+
 add_subdirectory(simulators)
 add_subdirectory(backends)
