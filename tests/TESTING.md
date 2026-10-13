@@ -71,3 +71,20 @@ To execute all tests, move to that directory and use the simple command
 pytest
 ```
 on an environment where pytest is installed.
+
+## C++ tests
+
+The C++ components of the quantum-communications executor (random delays, noise
+channels, communication model and the shot engine itself) are tested with
+GoogleTest in `tests/cpp`. They are built only when configuring with
+`-DCUNQA_BUILD_TESTS=ON`, which fetches GoogleTest, and run with `ctest`:
+
+```
+cmake -B build/ -DCUNQA_BUILD_TESTS=ON
+cmake --build build/ --target cunqa_cpp_tests
+ctest --test-dir build/
+```
+
+The engine tests run circuits on the simulators themselves and compare the
+statistics with analytic predictions, with fixed seeds and tolerances of a few
+standard deviations.
