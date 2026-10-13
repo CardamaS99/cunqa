@@ -61,6 +61,24 @@ basis list, add it there too — the suite then starts testing it on every simul
 that claims it. Gates claimed but without a test are listed at the top of each run
 so the gap is visible.
 
+## `check_comm_noise.py`
+
+Deploys two vQPUs with quantum communications and a communication model in their
+backend, and checks teledata between them against the analytic predictions of the
+model: the deployed model, its override through the `comm_model` run argument,
+per-link parameters given by circuit id, the decrease of the fidelity with the
+generation time, the simulated timeline, prefetching and the report of a wrong model.
+
+```bash
+python check_comm_noise.py
+python check_comm_noise.py --simulator Maestro   # Pauli-twirled model
+python check_comm_noise.py --shots 8000
+```
+
+The physics of the model (pair states, telegate errors, idle relaxation, exact and
+averaged strategies, stabilizer runs) is unit-tested in C++ in `tests/cpp`, which is
+built with `-DCUNQA_BUILD_TESTS=ON` and run with `ctest`.
+
 ## Known deviations
 
 Differences that are real but that this suite cannot catch, recorded so they are not

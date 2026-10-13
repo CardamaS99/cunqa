@@ -309,3 +309,196 @@ Further examples and use cases are listed in :doc:`../further_examples/further_e
                 print(f"Counts from vQPU {qpu.id}: {counts}")
 
             qdrop(family)
+
+
+.. _sec_comm_model:
+
+**Noise and time in the communications**
+----------------------------------------
+
+By default, entanglement is ideal and instantaneous: a :py:meth:`~cunqa.circuit.core.CunqaCircuit.gen_ent`
+directive prepares a perfect Bell (or GHZ) state as soon as every participant reaches it, and the
+local operations are noiseless. A **communication model** replaces this with an emulation of the
+cost of distributing entanglement in time and fidelity. It is built around the entanglement
+resource rather than around each protocol: an EPR generator delivers imperfect pairs after a random
+delay, the pair halves decohere in the :term:`communication qubits <comm qubit>` until they are
+consumed, and every qubit that waits for them decoheres too. The local operations of the protocols
+(CNOTs, measurements, Pauli corrections) keep using the noise model of each :term:`vQPU`.
+
+The model is enabled as soon as the :term:`backend` of a vQPU has a ``comm_model`` or a
+``noise_model`` section, or when a ``comm_model`` run argument is passed to :py:func:`~cunqa.qpu.run`.
+Without any of them, the behaviour and the performance are the ones described above.
+
+Simulated time
+^^^^^^^^^^^^^^
+
+Each shot follows its own timeline in :term:`simulated time`, independent of the wall-clock time
+of the emulation:
+
+- Every qubit keeps the time at which it is free again and every classical bit the time at which its
+  value is known. An operation starts as soon as all its qubits are free, and operations on
+  different qubits run in parallel. The clock of a vQPU is the latest time over its qubits.
+- Gates, measurements and resets take the durations of the noise properties of the vQPU (``Gate
+  duration (s)``, ``Duration (s)``, ``Readout duration (s)``) or, for the operations not described
+  there, the defaults given in ``durations``.
+- A classically controlled block (:py:meth:`~cunqa.circuit.core.CunqaCircuit.cif`) waits for its
+  bits plus the ``feed_forward_latency`` of the vQPU; its qubits stay reserved until the decision is
+  known, even when the block is skipped.
+- A classical message is sent once its bits are known and arrives after the ``latency`` of the link
+  plus a random ``jitter``.
+- The time a qubit spends idle is turned into thermal relaxation (T1/T2) when the qubit is next used.
+  Relaxation composes, :math:`R_{t_1} \circ R_{t_2} = R_{t_1 + t_2}`, so applying it lazily is exact.
+
+Entanglement generation
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Each link has an EPR generator. A request is issued when the participants reach their
+:py:meth:`~cunqa.circuit.core.CunqaCircuit.gen_ent` directive: *on demand*, once the vQPU has
+finished the work issued before it (its data qubits) and the communication qubit is free. The
+generator then makes :math:`N \sim \mathrm{Geom}(p)` attempts of duration ``attempt_time``
+(:math:`\tau`, including the heralding round trip), so the pair is ready at
+:math:`t_\mathrm{ready} = t_\mathrm{req} + N\tau`. At that time the communication qubits are
+re-initialized and loaded with a Bell-diagonal pair (a Werner pair of the given ``fidelity``, or
+explicit ``bell_coefficients``), which then decoheres with the T1/T2 of the communication qubits
+until it is consumed. The operation consuming it starts at :math:`\max(\text{local time}, t_\mathrm{ready})`.
+
+Requesting and consuming a pair are separate events, so pairs can be **prefetched**: calling
+:py:meth:`~cunqa.circuit.core.CunqaCircuit.gen_ent` earlier in the circuits overlaps the generation with
+local work, and the protocols consume that pair when called with ``prefetched=True``. On-demand
+requests, the default, give an upper bound on the idle decoherence of the data qubits; prefetching
+trades it for decoherence of the pair in memory.
+
+.. code-block:: python
+
+    # Pair requested before the local work...
+    circuit_1.gen_ent(comm_qubits_1[0], "circuit_2", "teledata")
+    circuit_2.gen_ent(comm_qubits_2[0], "circuit_1", "teledata")
+
+    circuit_1.cx(0, 1)  # ... so that it is generated while this runs
+
+    qsend(circuit_1, data_qubits_1[0], comm_qubits_1[0], [0, 1], "circuit_2", tag="teledata", prefetched=True)
+    qrecv(circuit_2, data_qubits_2[0], comm_qubits_2[0], [0, 1], "circuit_1", tag="teledata", prefetched=True)
+
+States shared by more than two vQPUs (the GHZ states of :py:func:`~cunqa.qc_protocols.cat_entangler`)
+are assembled from a star of links rooted at the first vQPU (by id): the state is ready when the
+slowest link heralds, each leaf carries the Pauli noise of its own link, and the pairs that arrive
+earlier decohere while waiting.
+
+The parameters of the generator can also be **tabulated**: a list of samples, each one with the
+generation ``delay`` and the Bell coefficients (or ``fidelity``) of the pair it delivers, with
+optional ``weight``. This is how statistics precomputed with a network simulator (e.g. Q2NS or
+NetSquid) are fed to CUNQA.
+
+Random waits in each shot
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The generation times (and the classical jitter) are random. ``strategy`` selects how the shots
+account for them:
+
+- ``"exact"`` (default): every shot samples its own delays, so each shot is one realization of the
+  timeline and the output statistics include the whole latency distribution. ``time_bin`` rounds the
+  sampled delays to a grid, as when shots are grouped by realization; keep it much smaller than T2.
+- ``"averaged"``: the delays are not sampled. The timeline uses their means, and each random wait
+  :math:`T` becomes the averaged relaxation channel :math:`\mathbb{E}[R_T]`, with parameters
+  :math:`\mathbb{E}[e^{-T/T_1}]` and :math:`\mathbb{E}[e^{-T/T_2}]` (the Laplace transform of the
+  waiting time). It is exact for a single qubit, but it misses the correlations of a wait shared by
+  several qubits, since :math:`\mathbb{E}[R_T \otimes R_T] \neq \mathbb{E}[R_T] \otimes \mathbb{E}[R_T]`.
+
+For instance, with a Bell state on two data qubits that both wait for the same pair, generated with
+:math:`p = 0.02` and :math:`\tau = 0.2\,\mu s` (so :math:`\mathbb{E}[T] = T_2/2`), the probability of
+an even XX parity is :math:`(1 + \mathbb{E}[e^{-2T/T_2}])/2 \approx 0.749` with the exact strategy and
+:math:`(1 + \mathbb{E}[e^{-T/T_2}]^2)/2 \approx 0.721` with the averaged one: the averaged channel
+underestimates the coherence of correlated states.
+
+Noise modes
+^^^^^^^^^^^
+
+``noise_mode`` selects how the channels are applied:
+
+- ``"exact"``: thermal relaxation as its exact channel (a mixture of identity, Z and reset when
+  :math:`T_2 \leq T_1`, amplitude damping plus dephasing otherwise). It needs Kraus channels, which
+  only ``Aer`` provides (not with its stabilizer methods).
+- ``"pauli"``: every channel is replaced by its Pauli twirl (for relaxation,
+  :math:`p_x = p_y = (1 - e^{-t/T_1})/4` and :math:`p_z = (1 + e^{-t/T_1} - 2e^{-t/T_2})/4`), so that
+  Clifford circuits run on stabilizer simulators (``method="stabilizer"`` in ``Aer``). The
+  Bell-diagonal pairs are already Pauli channels.
+- ``"auto"`` (default): ``"exact"`` when the simulator supports it, ``"pauli"`` otherwise.
+
+Configuration
+^^^^^^^^^^^^^
+
+The model is described by a ``comm_model`` object. In the :term:`backend` file of each vQPU, next to
+its other fields, it sets the model deployed with the vQPUs, as in
+``examples/qu_comm/08-communication_noise.json`` (see :doc:`../further_examples/quantum_communications`);
+passed as a run argument, it changes it for that run only, so that parameters can be swept without
+deploying the vQPUs again. Only the keys given are changed:
+
+.. code-block:: python
+
+    qjobs = run([circuit_1, circuit_2], qpus, shots=4000, comm_model={
+        "epr": {"fidelity": 0.95, "success_probability": 0.01, "attempt_time": 1e-6},
+        "comm_qubits": {"T1": 1e-3, "T2": 5e-4},
+        "classical_link": {"latency": 1e-6},
+        "links": [{"circuits": ["circuit_1", "circuit_2"], "epr": {"fidelity": 0.9}}]
+    })
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Key
+     - Meaning
+   * - ``epr``
+     - Generator of every link. Parametric (default): ``fidelity`` (Werner pair) or
+       ``bell_coefficients`` (``[Phi+, Psi+, Psi-, Phi-]``), ``success_probability`` (:math:`p`, default
+       1) and ``attempt_time`` (:math:`\tau` in seconds, default 0). Tabulated: ``"source": "tabulated"``
+       with ``samples`` (``delay``, ``fidelity`` or ``bell_coefficients``, ``weight``) or the ``path``
+       of a JSON file with them.
+   * - ``classical_link``
+     - Classical messages between vQPUs: ``latency`` (seconds) and ``jitter``, either
+       ``{"distribution": "uniform", "width": w}`` or ``{"distribution": "exponential", "mean": m}``.
+   * - ``links``
+     - Parameters of specific links, overriding ``epr`` and ``classical_link``: a list of objects with
+       the two ``circuits`` they connect (``qpus`` in a backend) and their ``epr`` and/or
+       ``classical_link``.
+   * - ``data_qubits``, ``comm_qubits``
+     - ``T1`` and ``T2`` (seconds) of the idle qubits. The noise properties of the vQPU take
+       precedence for the data qubits; the communication qubits use ``comm_qubits``, then the noise
+       properties, then ``data_qubits``.
+   * - ``durations``
+     - Default durations in seconds of ``gate_1q``, ``gate_2q``, ``gate_multi``, ``measure`` and
+       ``reset`` (0 by default).
+   * - ``feed_forward_latency``
+     - Seconds the controller of a vQPU needs to act on a classical bit (default 0).
+   * - ``strategy``, ``time_bin``
+     - ``"exact"`` or ``"averaged"`` treatment of the random waits; grid for the sampled delays.
+   * - ``noise_mode``
+     - ``"auto"``, ``"exact"`` or ``"pauli"``.
+
+The parameters of the network (``epr``, ``classical_link``, ``links``, ``strategy``, ``time_bin``
+and ``noise_mode``) are shared by all the vQPUs, so the backends that set them must agree; the
+others (``data_qubits``, ``comm_qubits``, ``durations`` and ``feed_forward_latency``) belong to each
+vQPU. A wrong model is reported when the vQPUs are deployed, or as the error of the run.
+
+Results
+^^^^^^^
+
+With a communication model, the :py:class:`~cunqa.result.Result` of each circuit also reports its
+:py:attr:`~cunqa.result.Result.simulated_time`, the simulated time at which it finished as
+statistics over the shots, and :py:attr:`~cunqa.result.Result.comm_stats`, with the entanglement
+requests per shot and their mean generation time.
+
+.. code-block:: python
+
+    results = gather(qjobs)
+    print(results[1].simulated_time)   # {'mean': 1.2e-05, 'std': 3.1e-06, 'min': ..., 'max': ...}
+    print(results[1].comm_stats)       # {'entanglement_requests_per_shot': 1.0, 'mean_generation_time': ...}
+
+Scope of the model
+^^^^^^^^^^^^^^^^^^
+
+Each pair of communication qubits runs its own generation: the number of communication qubits of a
+vQPU bounds how many pairs it can generate and hold at once, and requests that share a communication
+qubit are served in the order of the circuit, which is their simulated-time order. Multi-hop links,
+entanglement swapping and distillation, memory cutoffs and contention between many nodes are not
+modeled. The excited-state population of the qubits is neglected in the relaxation channels.
