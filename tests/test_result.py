@@ -97,3 +97,23 @@ def test_str_contains_id_counts_and_time_taken():
     assert "counts" in s
     assert "time_taken" in s
     assert "0.1" in s
+
+
+def test_simulated_time_and_comm_stats_from_result():
+    result_dict = {
+        "counts": {"0": 1},
+        "time_taken": 0.1,
+        "simulated_time": {"mean": 5.7e-6, "std": 0.0, "min": 5.7e-6, "max": 5.7e-6},
+        "comm_stats": {"entanglement_requests_per_shot": 1.0, "mean_generation_time": 1e-6},
+    }
+    r = Result(result_dict, circ_id="circJ", registers={"c": [0]})
+    assert r.simulated_time["mean"] == 5.7e-6
+    assert r.comm_stats["mean_generation_time"] == 1e-6
+
+
+def test_simulated_time_and_comm_stats_raise_without_comm_model():
+    r = Result({"counts": {"0": 1}, "time_taken": 0.1}, circ_id="circK", registers={"c": [0]})
+    with pytest.raises(RuntimeError):
+        _ = r.simulated_time
+    with pytest.raises(RuntimeError):
+        _ = r.comm_stats

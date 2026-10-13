@@ -35,6 +35,8 @@ class Result:
 
     .. autoattribute:: counts
     .. autoattribute:: time_taken
+    .. autoattribute:: simulated_time
+    .. autoattribute:: comm_stats
     .. autoattribute:: result
     """
     _result: dict
@@ -139,7 +141,37 @@ class Result:
             return time
         else:
             raise RuntimeError(f"The result format is unknown: no time_taken in it.")
-        
+
+    @property
+    def simulated_time(self) -> dict:
+        """
+        Simulated (logical) time, in seconds, at which the circuit finished, as statistics over
+        the shots: ``{"mean", "std", "min", "max"}``. Unlike :py:attr:`time_taken`, it does not
+        depend on how long the emulation takes, but on the modeled durations of the operations,
+        of the entanglement generation and of the classical communications. It is reported by
+        vQPUs with quantum communications when a communication model is set (see
+        :doc:`/overview/quantum_comm`).
+
+            >>> result.simulated_time
+            {'mean': 5.7e-06, 'std': 0.0, 'min': 5.7e-06, 'max': 5.7e-06}
+        """
+        if "simulated_time" not in self._result:
+            raise RuntimeError("No simulated time in the result: it is only reported by vQPUs with "
+                               "quantum communications and a communication model.")
+        return self._result["simulated_time"]
+
+    @property
+    def comm_stats(self) -> dict:
+        """
+        Statistics of the quantum communications of the circuit when a communication model is
+        set: ``entanglement_requests_per_shot`` and ``mean_generation_time`` (seconds from the
+        request of the entangled state to its delivery).
+        """
+        if "comm_stats" not in self._result:
+            raise RuntimeError("No communication statistics in the result: they are only reported "
+                               "by vQPUs with quantum communications and a communication model.")
+        return self._result["comm_stats"]
+
     @property
     def statevector(self) -> Union[dict[np.array], np.array]:
         """
